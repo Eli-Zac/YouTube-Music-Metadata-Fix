@@ -7,6 +7,8 @@
 // @match        https://music.youtube.com/*
 // @run-at       document-start
 // @license      MIT
+// @updateURL    https://github.com/Eli-Zac/YouTube-Music-Metedata-Fix/raw/refs/heads/main/YTMusicMetadataFix.user.js
+// @downloadURL  https://github.com/Eli-Zac/YouTube-Music-Metedata-Fix/raw/refs/heads/main/YTMusicMetadataFix.user.js
 // ==/UserScript==
 
 (function () {
