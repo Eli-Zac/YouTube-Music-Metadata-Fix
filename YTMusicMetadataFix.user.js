@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube Music Metedata Fix
+// @name         YouTube Music Metadata Fix
 // @namespace    https://github.com/Eli-Zac/YouTube-Music-Metedata-Fix
-// @version      1.0.0
-// @description  Ensures full track metadata (title, artist, album) is correctly set in MediaSession for YouTube Music, keeping Windows controls and Web Scrobbler in sync.
+// @version      1.0.1
+// @description  Ensures full track metadata (title, artist, album) is correctly set in MediaSession and Web Scrobbler for YouTube Music.
 // @author       Eli_Zac
 // @match        https://music.youtube.com/*
 // @run-at       document-start
@@ -14,6 +14,20 @@
 (function () {
     'use strict';
 
+    // Track state
+    let lastTrackId = null;
+    let lastVideoSrc = null;
+    let isFirstTrack = true;
+    let isOurUpdate = false;
+    const DEBUG = false;
+
+    function log(...args) {
+        if (DEBUG) console.log('[YTM Metadata Fix]', ...args);
+    }
+
+    /**
+     * Extract metadata from the player bar DOM elements
+     */
     function getMetadataFromPlayer() {
         const titleEl = document.querySelector('.title.ytmusic-player-bar');
         const byline = document.querySelector('.byline.ytmusic-player-bar');
@@ -27,8 +41,107 @@
         return { title, artist, album };
     }
 
-    function patchMediaSession() {
+    /**
+     * Dispatch multiple events to signal track change to Web Scrobbler
+     */
+    function dispatchWebScrobblerEvents(videoElement) {
+        if (!videoElement) return;
+
+        // Dispatch multiple events to ensure Web Scrobbler picks up the change
+        const events = ['timeupdate', 'play', 'seeked'];
+        events.forEach(eventName => {
+            try {
+                videoElement.dispatchEvent(new Event(eventName, { bubbles: true }));
+                log(`Dispatched ${eventName} event`);
+            } catch (e) {
+                console.error(`Error dispatching ${eventName}:`, e);
+            }
+        });
+    }
+
+    /**
+     * Update DOM elements that Web Scrobbler reads
+     */
+    function updateWebScrobblerDOM(data) {
+        const titleEl = document.querySelector('.title.ytmusic-player-bar');
+        const bylineLinks = document.querySelectorAll('.byline.ytmusic-player-bar a');
+
+        if (titleEl && data.title && titleEl.textContent.trim() !== data.title) {
+            titleEl.textContent = data.title;
+            log('Updated title in DOM:', data.title);
+        }
+
+        if (bylineLinks[0] && data.artist && bylineLinks[0].textContent.trim() !== data.artist) {
+            bylineLinks[0].textContent = data.artist;
+            log('Updated artist in DOM:', data.artist);
+        }
+
+        if (bylineLinks[1] && data.album && bylineLinks[1].textContent.trim() !== data.album) {
+            bylineLinks[1].textContent = data.album;
+            log('Updated album in DOM:', data.album);
+        }
+    }
+
+    /**
+     * Update MediaSession metadata and notify Web Scrobbler
+     */
+    function pushMetadataToMediaSessionAndScrobbler(reason = 'unknown') {
         if (!navigator.mediaSession) return;
+
+        const data = getMetadataFromPlayer();
+        if (!data) {
+            log('No metadata available in player');
+            return;
+        }
+
+        const trackId = `${data.title}::${data.artist}::${data.album}`;
+        const isNewTrack = trackId !== lastTrackId;
+
+        if (!isNewTrack && !isFirstTrack && reason !== 'periodical') {
+            return; // Skip if same track and not periodic check
+        }
+
+        lastTrackId = trackId;
+
+        log(`Track changed (${reason}): ${data.title} - ${data.artist}`, {
+            isFirstTrack,
+            isNewTrack,
+            data
+        });
+
+        // Update MediaSession text fields in-place, never touch artwork
+        const existing = navigator.mediaSession.metadata;
+        if (existing) {
+            existing.title = data.title;
+            existing.artist = data.artist;
+            existing.album = data.album;
+            // Re-assign to trigger browser update, skip our patch
+            isOurUpdate = true;
+            navigator.mediaSession.metadata = existing;
+            isOurUpdate = false;
+        }
+
+        // Update DOM elements for Web Scrobbler
+        updateWebScrobblerDOM(data);
+
+        // Dispatch events to notify Web Scrobbler
+        const videoElement = document.querySelector('video');
+        if (videoElement) {
+            dispatchWebScrobblerEvents(videoElement);
+        }
+
+        if (isFirstTrack) {
+            isFirstTrack = false;
+            log('First track detected and synced');
+        }
+    }
+
+    /**
+     * Patch the mediaSession.metadata setter to inject correct metadata
+     */
+    function patchMediaSessionSetter() {
+        if (!navigator.mediaSession) return;
+
         const proto = Object.getPrototypeOf(navigator.mediaSession);
         const descriptor = Object.getOwnPropertyDescriptor(proto, 'metadata');
         if (!descriptor || !descriptor.set) return;
@@ -39,27 +152,127 @@
             get: descriptor.get.bind(navigator.mediaSession),
             set: function (value) {
                 try {
+                    if (isOurUpdate) {
+                        // Our own re-assignment — pass through immediately
+                        descriptor.set.call(this, value);
+                        return;
+                    }
+                    // YouTube Music's update — fix text fields, leave artwork alone
                     requestAnimationFrame(() => {
                         const data = getMetadataFromPlayer();
-                        if (data) {
+                        if (data && value) {
                             value.title = data.title;
                             value.artist = data.artist;
                             value.album = data.album;
+                            log('Patched mediaSession metadata:', data);
                         }
                         descriptor.set.call(this, value);
                     });
                 } catch (e) {
-                    console.error('MediaSession override error', e);
+                    console.error('MediaSession patch error:', e);
                 }
             }
         });
+
+        log('MediaSession setter patched');
     }
 
-    const wait = setInterval(() => {
-        if (navigator.mediaSession) {
-            clearInterval(wait);
-            patchMediaSession();
+    /**
+     * Observe changes in the player bar (title, artist, album text changes)
+     */
+    function observePlayerBarChanges() {
+        const playerBar = document.querySelector('ytmusic-player-bar');
+        if (!playerBar) {
+            log('Player bar not found');
+            return false;
         }
-    }, 50);
+
+        const observer = new MutationObserver(() => {
+            pushMetadataToMediaSessionAndScrobbler('playerBarMutation');
+        });
+
+        observer.observe(playerBar, {
+            childList: true,
+            subtree: true,
+            characterData: true
+        });
+
+        log('Player bar change observer started');
+        return true;
+    }
+
+    /**
+     * Observe video element src changes (detects manual skips)
+     */
+    function observeVideoSourceChanges() {
+        const videoElement = document.querySelector('video');
+        if (!videoElement) {
+            log('Video element not found');
+            return false;
+        }
+
+        // Initial video src
+        lastVideoSrc = videoElement.src;
+
+        const observer = new MutationObserver(() => {
+            const currentSrc = videoElement.src;
+            if (currentSrc && currentSrc !== lastVideoSrc) {
+                lastVideoSrc = currentSrc;
+                log('Video source changed (detected manual skip)');
+                // Wait longer for artwork to load after skip (300ms instead of 100ms)
+                setTimeout(() => {
+                    pushMetadataToMediaSessionAndScrobbler('manualSkip');
+                }, 300);
+            }
+        });
+
+        observer.observe(videoElement, {
+            attributes: true,
+            attributeFilter: ['src']
+        });
+
+        log('Video source change observer started');
+        return true;
+    }
+
+    /**
+     * Initialize the script when mediaSession is available
+     */
+    function initializeScript() {
+        if (!navigator.mediaSession) {
+            log('MediaSession not available, retrying...');
+            setTimeout(initializeScript, 100);
+            return;
+        }
+
+        log('=== YouTube Music Metadata Fix v2.0.0 Initialized ===');
+
+        // Patch the mediaSession setter
+        patchMediaSessionSetter();
+
+        // Set up observers
+        const playerBarObserverStarted = observePlayerBarChanges();
+        const videoObserverStarted = observeVideoSourceChanges();
+
+        // Initial metadata sync (detects first track)
+        setTimeout(() => {
+            pushMetadataToMediaSessionAndScrobbler('pageLoad');
+        }, 500);
+
+        // Periodic fallback sync every 2 seconds to catch missed events
+        setInterval(() => {
+            pushMetadataToMediaSessionAndScrobbler('periodical');
+        }, 2000);
+
+        log('Observers and intervals initialized. Monitoring metadata changes...');
+    }
+
+    // Start initialization
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeScript);
+    } else {
+        // DOM already loaded
+        initializeScript();
+    }
 
 })();
