@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Music Metadata Fix
 // @namespace    https://github.com/Eli-Zac/YouTube-Music-Metedata-Fix
-// @version      1.0.1
+// @version      1.0.2
 // @description  Ensures full track metadata (title, artist, album) is correctly set in MediaSession and Web Scrobbler for YouTube Music.
 // @author       Eli_Zac
 // @match        https://music.youtube.com/*
@@ -34,9 +34,14 @@
         if (!titleEl || !byline) return null;
 
         const title = titleEl.textContent.trim();
-        const links = byline.querySelectorAll('a');
-        const artist = links[0]?.textContent.trim() || '';
-        const album = links[1]?.textContent.trim() || '';
+        
+        // Parse byline text using bullet separator (•) instead of link order
+        // Format is typically: "Artist • Album • Year" or "Artist • Album"
+        const bylineText = byline.textContent.trim();
+        const parts = bylineText.split('•').map(p => p.trim());
+        
+        const artist = parts[0] || '';  // First part is always the artist
+        const album = parts[1] || '';   // Second part is the album
 
         return { title, artist, album };
     }
@@ -57,29 +62,6 @@
                 console.error(`Error dispatching ${eventName}:`, e);
             }
         });
-    }
-
-    /**
-     * Update DOM elements that Web Scrobbler reads
-     */
-    function updateWebScrobblerDOM(data) {
-        const titleEl = document.querySelector('.title.ytmusic-player-bar');
-        const bylineLinks = document.querySelectorAll('.byline.ytmusic-player-bar a');
-
-        if (titleEl && data.title && titleEl.textContent.trim() !== data.title) {
-            titleEl.textContent = data.title;
-            log('Updated title in DOM:', data.title);
-        }
-
-        if (bylineLinks[0] && data.artist && bylineLinks[0].textContent.trim() !== data.artist) {
-            bylineLinks[0].textContent = data.artist;
-            log('Updated artist in DOM:', data.artist);
-        }
-
-        if (bylineLinks[1] && data.album && bylineLinks[1].textContent.trim() !== data.album) {
-            bylineLinks[1].textContent = data.album;
-            log('Updated album in DOM:', data.album);
-        }
     }
 
     /**
@@ -121,9 +103,6 @@
             isOurUpdate = false;
         }
 
-        // Update DOM elements for Web Scrobbler
-        updateWebScrobblerDOM(data);
-
         // Dispatch events to notify Web Scrobbler
         const videoElement = document.querySelector('video');
         if (videoElement) {
@@ -158,7 +137,8 @@
                         return;
                     }
                     // YouTube Music's update — fix text fields, leave artwork alone
-                    requestAnimationFrame(() => {
+                    // Use setTimeout instead of requestAnimationFrame to work even when tab is not focused
+                    setTimeout(() => {
                         const data = getMetadataFromPlayer();
                         if (data && value) {
                             value.title = data.title;
@@ -167,7 +147,7 @@
                             log('Patched mediaSession metadata:', data);
                         }
                         descriptor.set.call(this, value);
-                    });
+                    }, 0);
                 } catch (e) {
                     console.error('MediaSession patch error:', e);
                 }
