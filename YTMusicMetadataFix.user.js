@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Music Metadata Fix
 // @namespace    https://github.com/Eli-Zac/YouTube-Music-Metedata-Fix
-// @version      1.0.3
+// @version      1.0.4
 // @description  Ensures full track metadata (title, artist, album) is correctly set in MediaSession and Web Scrobbler for YouTube Music.
 // @author       Eli_Zac
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=music.youtube.com
@@ -35,14 +35,19 @@
         if (!titleEl || !byline) return null;
 
         const title = titleEl.textContent.trim();
-        
+
         // Parse byline text using bullet separator (•) instead of link order
         // Format is typically: "Artist • Album • Year" or "Artist • Album"
+        // In video mode: "Artist • Views • Likes" (need to filter out engagement metrics)
         const bylineText = byline.textContent.trim();
         const parts = bylineText.split('•').map(p => p.trim());
-        
-        const artist = parts[0] || ''; // First part is always the artist
-        const album = parts[1] || ''; // Second part is the album
+
+        // Filter out engagement metrics (Views, Likes, Comments, etc.)
+        const engagementPatterns = /^[\d.]+[KMB]?\s*(Views?|Likes?|Comments?|Shares?)$/i;
+        const metadataParts = parts.filter(part => !engagementPatterns.test(part));
+
+        const artist = metadataParts[0] || ''; // First part is always the artist
+        const album = metadataParts[1] || ''; // Second part is the album
 
         return { title, artist, album };
     }
